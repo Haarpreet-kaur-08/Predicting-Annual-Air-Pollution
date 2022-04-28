@@ -1,0 +1,253 @@
+#LIBARIES
+library(tidyverse)
+library(readr)
+library(plotly)
+library(skimr)
+library(dplyr)
+library(ggcorrplot)
+library("writexl")
+library(tidymodels)
+library(recipes)
+library(vip)
+library(forecast)
+library(Metrics)
+
+df <- read_csv("Dana-4830-final/pm25_data.csv")
+View(df)
+
+#ANNEX-1:
+  
+  #structure of data
+  str(df)
+
+#checking missing value
+missing <- sapply(df,function(x)sum(is.na(x)))
+data_missing <- data.frame(missing)
+View(data_missing)
+
+#converting three variables into factor
+df <- df %>% mutate(id = as.factor(id)) %>%
+  mutate(fips = as.factor(fips)) %>%
+  mutate(zcta = as.factor(zcta))
+
+
+
+#checking again three variables
+str(df)
+
+df_skimmed <- skimr::skim(df)
+df_skimmed1 <- data.frame(df_skimmed)
+View(df_skimmed1)
+
+skim(df)
+
+#bar plot for categorical values
+g <- ggplot(df, aes(x = state)) + geom_bar()
+ggplotly(g)
+p <- ggplot(df, aes(x = county)) + geom_bar()
+ggplotly(p)
+q <- ggplot(df, aes(x = city)) + geom_bar()
+ggplotly(q)
+
+#ANNEX-2
+df_state <- unique(df$state)
+df_state
+
+#ANNEX-3
+df_stations_per_city = df %>% count(city)
+View(df_stations_per_city )
+
+#can change slicer accordingly 
+g <- df_stations_per_city %>% 
+  arrange(desc(n)) %>%
+  slice(2:10) %>%
+  ggplot(., aes(x=city, y=n))+
+  geom_bar(stat='identity')
+ggplotly(g)
+
+#ANNEX-4
+corr <- round(cor(df %>%select_if(is.numeric),method = "pearson"), 2)
+ggcorrplot(corr, method = "square", type = "upper", ggtheme = ggplot2::theme_minimal, title = "Correlation plot",
+           show.legend = TRUE, legend.title = "Correlation Plot", show.diag = FALSE,
+           colors = c("blue", "white", "red"), outline.color = "Black",
+           hc.order = FALSE, hc.method = "complete", lab = FALSE,
+           lab_col = "black", lab_size = 4, p.mat = NULL, sig.level = 0.05,
+           insig = "pch", pch = 4, pch.col = "black",
+           pch.cex = 5, tl.cex = 12, tl.col = "black", tl.srt = 45,
+           digits = 2)
+df_cor <- data.frame(corr)
+View(df_cor)
+write_xlsx(df_cor,"df_cor.xlsx")
+
+#ANNEX-5
+#splitting the data
+
+set.seed(123)
+split_df <-initial_split(df, prop = 2/3)
+split_df 
+
+train<-training(split_df)
+dim(train)
+test<-testing(split_df)
+dim(test)
+
+#checking the proportion of cities
+train_cities <- train %>% distinct(city)
+dim(train_cities)
+test_cities <- test %>% distinct(city)
+dim(test_cities)
+
+a <- train %>% 
+  count(city) %>% 
+  mutate(prop = n/sum(n))
+View(a)
+
+b <- test %>% 
+  count(city) %>% 
+  mutate(prop = n/sum(n))
+View(b)
+
+#ANNEX-6
+# different cities
+dim(setdiff(train_cities, test_cities))
+
+# cities that overlap
+dim(intersect(train_cities, test_cities))
+
+n_unique(df$city)
+         
+#ANNEX-7
+g <- df_stations_per_city %>% 
+           arrange(desc(n)) %>%
+           slice(1:10) %>%
+           ggplot(., aes(x=city, y=n))+
+           geom_bar(stat='identity')
+ggplotly(g)
+         
+         
+df_bin <- df %>%
+           mutate(city = case_when(city == "Not in a city" ~ "Not in a city",
+                                   city != "Not in a city" ~ "In a city"))
+str(df_bin)
+         
+ #ANNEX-8 TRAIN SET AND TEST
+set.seed(1234) 
+df_bin_split <-initial_split(df_bin, prop = 2/3)
+df_bin_split
+         
+df_bin_train <-training(df_bin_split)
+df_bin_test <-testing(df_bin_split)
+View(df_bin_test)
+         
+library(recipes)
+         
+rec <-df_bin_train %>%
+           recipe(value~.) %>%
+           update_role(everything(), new_role = "predictor") %>%
+           update_role(value, new_role = "outcome role") %>%
+           update_role(id, new_role = "id variable") %>%
+           update_role("fips", new_role = "county id") %>%
+           step_dummy(state, county, city, zcta, one_hot = TRUE) %>%
+           step_corr(all_numeric(), - CMAQ, - aod)%>%
+           step_nzv(all_numeric(), - CMAQ, - aod) %>% 
+           step_normalize(all_predictors()) 
+         
+a <- prep(rec, retain = TRUE)
+         
+preproc_train <- bake(a, new_data = NULL)
+glimpse(preproc_train)
+         
+preproc_test<- bake(a, new_data = df_bin_test)
+glimpse(preproc_test)
+         
+dim(preproc_train)
+dim(preproc_test)
+         
+#ANNEX-8 TEST SET
+library(recipes)
+rec_test <- df_bin_test %>%
+           recipe(value~.) %>%
+           update_role(everything(), new_role = "predictor") %>%
+           update_role(value, new_role = "outcome role") %>%
+           update_role(id, new_role = "id variable") %>%
+           update_role("fips", new_role = "county id") %>%
+           step_dummy(state, county, city, zcta, one_hot = TRUE) %>%
+           step_corr(all_numeric(), - CMAQ, - aod)%>%
+           step_nzv(all_numeric(), - CMAQ, - aod) %>% 
+           step_normalize(all_predictors())
+         
+         
+a_test <- prep(rec_test, retain = TRUE)
+         
+         #preproc_test <- bake(a_test, new_data = NULL)
+         #glimpse(preproc_test)
+         
+dim(preproc_test)
+         
+#ANNEX-9 LINEAR REGRESSION MODEL
+model1 <- preproc_train %>% dplyr::select(-c('id','fips')) %>%
+           lm(value~.,data=.)
+summary(model1)
+         
+p1 <- predict(model1, preproc_test)
+p1
+         
+MAE_val =MAE(p1  ,preproc_test$value)
+MAE_val
+RMSE_val = RMSE(p1  ,preproc_test$value)
+RMSE_val
+         
+ #ANNEX-10 LINEAR DISCRIMINANT MODEL
+df_bin_train <- df_bin_train %>% mutate(AQI_Category= case_when(value >= 150.5 ~ 'Very unhealthy 201 to 300',
+                                                                         value >= 55.5 ~ 'Unhealthy 151 to 200',
+                                                                         value >= 35.5 ~ 'Unhealthy for sensitive group 101 to 150',
+                                                                         value >= 12.1 ~ 'Moderate 51 to 100',
+                                                                         TRUE ~ 'Good 0 to 500'
+         ))
+df_bin_train = df_bin_train %>% mutate(AQI_Category= as.factor(AQI_Category))
+         
+df_bin_test <- df_bin_test %>% mutate(AQI_Category= case_when(value >= 150.5 ~ 'Very unhealthy 201 to 300',
+                                                                       value >= 55.5 ~ 'Unhealthy 151 to 200',
+                                                                       value >= 35.5 ~ 'Unhealthy for sensitive group 101 to 150',
+                                                                       value >= 12.1 ~ 'Moderate 51 to 100',
+                                                                       TRUE ~ 'Good 0 to 500'
+         ))
+df_bin_test= df_bin_test %>% mutate(AQI_Category= as.factor(AQI_Category))
+         
+preproc_train$AQI_Category <- df_bin_train$AQI_Category
+preproc_test$AQI_Category <- df_bin_test$AQI_Category
+         
+         
+library("MASS")
+model2 <- preproc_train %>% dplyr::select(-c('id','fips','value','hs_orless','hs','nohs','log_prisec_length_10000',
+                                                      'log_nei_2008_pm10_sum_15000')) %>%
+           lda(AQI_Category~.,data=.)
+model2
+         
+prob <- predict(model2,preproc_test,type="response")
+prob
+mean(prob$class ==preproc_test$AQI_Category)
+         
+confusiontab <- table(prob$class,preproc_test$AQI_Category)
+sum(diag(confusiontab))/sum(confusiontab)
+library(caret)
+confusionMatrix(confusiontab)
+         
+library(pROC)
+roc(preproc_test$AQI_Category ~ prob$x) %>% plot(asp = NA)
+         
+#ANNEX-11 RANNDOM FOREST MODEL
+library(randomForest)
+preproc_train$id <- NULL
+preproc_train$fips <- NULL
+preproc_train$value <- NULL
+         
+model3 <- preproc_train  %>% randomForest(AQI_Category~.,data=.)
+model3
+         
+importance(model3)
+varImpPlot(model3)
+         
+predValid <- predict(model3, preproc_test)
+confusionMatrix(predValid,preproc_test$AQI_Category)
+         
